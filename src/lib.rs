@@ -7,6 +7,8 @@
 // What should task look like? Struct -> index, title, task, status, date_created, date_completed
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
 use std::{
     fs::{self, File},
     io::{self, BufWriter, Write},
@@ -14,7 +16,7 @@ use std::{
 };
 use time::UtcDateTime;
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum Status {
     Complete,
     Incomplete,
@@ -29,7 +31,7 @@ pub struct TodoConfig {
     pub index: Option<i32>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Todo {
     pub index: Option<i32>,
     pub title: String,
@@ -42,6 +44,7 @@ pub struct Todo {
 pub mod todo {
     use super::*;
 
+    /// Creates a new [`Todo`].
     pub fn new(task: &str, title: &str) -> Todo {
         Todo {
             index: Some(1),
@@ -55,8 +58,6 @@ pub mod todo {
 }
 
 impl Todo {
-    /// Creates a new [`Todo`].
-
     fn update_status(&mut self, status: Status) {
         self.status = status;
     }
@@ -67,9 +68,11 @@ impl Todo {
 }
 
 pub fn write_task_to_file(cfg: &TodoConfig, todo: &Todo) -> Result<()> {
-    let file = File::create(&cfg.output).with_context(|| format!("Error creating file"))?;
+    let file = File::create(&cfg.output).with_context(|| "Error creating file")?;
     let mut writer = BufWriter::with_capacity(64 * 1024, file);
-    writeln!(writer, "{}", format!("Task at hand {}", todo.task));
+
+    serde_json::to_writer_pretty(&mut writer, todo)?;
     writer.flush()?;
+
     Ok(())
 }
