@@ -1,18 +1,8 @@
-// todo "learn databases" -> write message into json with meta data. status of job.
-// todo -> should list out all incomplete tasks
-// todo -r "task title" or "task id" -> remove that task.
-// todo -c "task title" or "task id" -> complete a task.
-// todo ls -a "list all tasks, complete and incompleted tasks"
-// todo ls "list incomplete tasks"
-// What should task look like? Struct -> id, title, task, status, date_created, date_completed
-
-use anyhow::{Context, Result};
+use anyhow::{Ok, Result};
 use serde::{Deserialize, Serialize};
-
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, BufRead, BufReader, BufWriter, Read, Write},
-    path::{Path, PathBuf},
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, BufWriter, Write},
 };
 use time::UtcDateTime;
 
@@ -24,64 +14,171 @@ pub enum Status {
     Removed,
 }
 
-pub struct TodoConfig {
-    pub title: String,
-    pub task: String,
-    pub output: PathBuf,
-    pub id: Option<i32>,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Todo {
+pub struct Task {
     pub id: Option<i32>,
     pub title: String,
-    pub task: String,
+    pub desc: String,
     pub status: Status,
     pub date_created: UtcDateTime,
     pub date_completed: UtcDateTime,
+    pub priority: Option<u8>,
 }
 
-pub mod todo {
-    use super::*;
+pub struct TaskBuilder(Task);
 
-    /// Creates a new [`Todo`].
-    pub fn new(task: &str, title: &str) -> Todo {
-        Todo {
-            id: Some(1),
-            title: title.to_string(),
-            task: task.to_string(),
+impl TaskBuilder {
+    pub fn id(mut self, output: &str) -> Self {
+        let tasks = read_tasks(output);
+        let mut id = 1;
+        for task in tasks {
+            id = task.id.unwrap();
+        }
+        id += 1;
+        self.0.id = Some(id);
+        self
+    }
+
+    pub fn title(mut self, title: &str) -> Self {
+        self.0.title = title.to_string();
+        self
+    }
+
+    pub fn desc(mut self, desc: &str) -> Self {
+        self.0.desc = desc.to_string();
+        self
+    }
+
+    pub fn status(mut self, status: Status) -> Self {
+        self.0.status = status;
+        self
+    }
+
+    pub fn priority(mut self, priority: u8) -> Self {
+        self.0.priority = Some(priority);
+        self
+    }
+
+    pub fn build(self) -> Task {
+        self.0
+    }
+}
+
+impl Task {
+    /// Creates a new [`Task`].
+    pub fn builder() -> TaskBuilder {
+        TaskBuilder(Task {
+            id: Some(-1),
+            title: String::from("Task"),
+            desc: String::from("No description"),
             status: Status::Incomplete,
             date_created: UtcDateTime::now(),
             date_completed: UtcDateTime::now(),
-        }
+            priority: None,
+        })
     }
-}
 
-impl Todo {
-    fn update_status(&mut self, status: Status) {
+    fn _new(desc: &str) -> Self {
+        Task::builder().desc(desc).build()
+    }
+
+    fn _status(&mut self, status: Status) {
         self.status = status;
     }
 
-    fn update_date_completed(&mut self) {
+    fn _date_completed(&mut self) {
         self.date_completed = UtcDateTime::now();
     }
 }
 
-pub fn read_tasks_from_file(cfg: &TodoConfig) -> Vec<Todo> {
-    let file = File::open(&cfg.output).expect("file should exist");
-    let mut reader = BufReader::with_capacity(64 * 1024, file);
+pub fn add_task(output: &str, desc: &str) -> Result<()> {
+    //let task = Task::new(desc);
+    let task = Task::builder().id(output).desc(desc).build();
+    write_task(output, &task)?;
+    Ok(())
+}
+
+pub fn complete_task(output: &str, id: i32) -> Result<()> {
+    let mut tasks = read_tasks(output);
+    for task in &mut tasks {
+        if task.id.unwrap() == id {
+            task.status = Status::Complete;
+            break;
+        }
+    }
+    write_tasks(output, tasks)?;
+    Ok(())
+}
+
+pub fn remove_task(output: &str, id: i32) -> Result<()> {
+    let mut tasks = read_tasks(output);
+    let mut i = 0;
+    for task in &tasks {
+        if task.id.unwrap() == id {
+            break;
+        }
+        i += 1;
+    }
+
+    for task in &tasks {
+        println!("{:?}", task);
+    }
+
+    if i < tasks.len() {
+        tasks.remove(i);
+    }
+    println!("--");
+
+    for task in &tasks {
+        println!("{:?}", task);
+    }
+
+    write_tasks(output, tasks)?;
+    Ok(())
+}
+
+pub fn list_tasks(output: &str) -> Result<()> {
+    let tasks = read_tasks(output);
+    for task in tasks {
+        println!(
+            "[{}]  {:?}  {}",
+            task.id.unwrap_or_default(),
+            task.status,
+            task.desc
+        );
+    }
+    Ok(())
+}
+
+fn read_tasks(f_name: &str) -> Vec<Task> {
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .open(f_name)
+        .unwrap();
+    //let file = File::open(f_name).expect("file should exist");
+    let reader = BufReader::with_capacity(64 * 1024, file);
     let mut buffer = String::new();
 
-    let mut todos: Vec<Todo> = Vec::new();
+    let mut todos: Vec<Task> = Vec::new();
+
+    //match reader.read_line(&mut buffer) {
+    //    Ok(l) => l,
+    //    Err(_e) => panic!("Could not read count"),
+    //}
+
     for line_result in reader.lines() {
-        let line = match line_result {
-            Ok(l) => l,
-            Err(e) => panic!("Could not read from file"),
-        };
+        let line = line_result.expect("failed to parse line");
+
+        //let line = match line_result {
+        //    Ok(l) => (),
+        //    Err(_e) => panic!("Could not read from file"),
+        //};
+
         buffer.push_str(&line[..]);
 
         if line.chars().nth(0) == Some('}') {
-            let todo: Todo = serde_json::from_str(&buffer).expect("a deserialized todo");
+            let todo: Task = serde_json::from_str(&buffer).expect("a deserialized todo");
             todos.push(todo);
             buffer.clear();
         }
@@ -89,17 +186,34 @@ pub fn read_tasks_from_file(cfg: &TodoConfig) -> Vec<Todo> {
     todos
 }
 
-pub fn write_task_to_file(cfg: &TodoConfig, todo: &Todo) -> Result<()> {
+fn write_task(f_name: &str, todo: &Task) -> Result<()> {
     let file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&cfg.output)
-        .expect("a file opened for writing");
+        .open(f_name)
+        .expect("a file opened for appending");
     let mut writer = BufWriter::with_capacity(64 * 1024, file);
     serde_json::to_writer_pretty(&mut writer, todo)?;
-    writeln!(&mut writer, "{}", b'\n').expect("To write nextline character");
+    writeln!(&mut writer, "\n").expect("To write nextline character");
 
     writer.flush()?;
+    Ok(())
+}
 
+fn write_tasks(f_name: &str, tasks: Vec<Task>) -> Result<()> {
+    println!("--write_tasks--");
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(f_name)
+        .expect("a file opened for writing.");
+
+    let mut writer = BufWriter::with_capacity(64 * 1024, file);
+
+    for task in tasks {
+        println!("{:?}", &task);
+        serde_json::to_writer_pretty(&mut writer, &task)?;
+        writeln!(&mut writer, "\n").expect("To write nextline character");
+    }
     Ok(())
 }
