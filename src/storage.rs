@@ -11,32 +11,6 @@ use fs4::FileExt;
 use serde::{Serialize, de::DeserializeOwned};
 use tempfile::NamedTempFile; // For atomic writes
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Meta {
-    version: u32,
-    current_id: u32,
-    generated_at: TimeStamp,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TodoFile {
-    meta: Meta,
-    tasks: Vec<Task>,
-}
-
-impl TodoFile {
-    pub fn new() -> Self {
-        Self {
-            meta: Meta {
-                version: 1,
-                current_id: 1,
-                generated_at: TimeStamp::now_utc(),
-            },
-            tasks: Vec::new(),
-        }
-    }
-}
-
 /// Open storage file *with* a shared lock (read/write),
 /// auto-creating and seeding if missing.
 pub fn open_or_init(path: impl AsRef<Path>) -> Result<File> {
