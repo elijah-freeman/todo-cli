@@ -4,14 +4,18 @@ use std::{
     fs::{File, OpenOptions},
     io::ErrorKind,
 };
-use time::UtcDateTime;
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+// Self documenting alias
+pub type TimeStamp = OffsetDateTime;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub enum Status {
-    Complete,
-    Incomplete,
+    Done,
+    Pending,
     Canceled,
-    Removed,
+    InProgress,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -28,13 +32,14 @@ pub struct TodoFile {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Task {
-    pub id: Option<u32>,
+    pub id: Uuid,
     pub title: String,
     pub desc: String,
     pub tags: Vec<String>,
     pub status: Status,
-    pub date_created: UtcDateTime,
-    pub date_completed: UtcDateTime,
+    pub date_created: TimeStamp,
+    pub date_updated: TimeStamp,
+    pub date_completed: TimeStamp,
     pub priority: Option<u8>,
 }
 
@@ -84,9 +89,9 @@ impl Task {
             title: String::from("Task"),
             desc: String::from("No description"),
             tags: vec![],
-            status: Status::Incomplete,
-            date_created: UtcDateTime::now(),
-            date_completed: UtcDateTime::now(),
+            status: Status::Pending,
+            date_created: TimeStamp::now(),
+            date_completed: TimeStamp::now(),
             priority: Some(0),
         })
     }
@@ -131,7 +136,7 @@ pub fn complete_task(f_name: &str, id: u32) -> Result<()> {
     todo.meta.version += 1;
     for task in &mut todo.tasks {
         if task.id.unwrap() == id {
-            task.status = Status::Complete;
+            task.status = Status::Done;
             break;
         }
     }

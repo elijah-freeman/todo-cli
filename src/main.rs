@@ -21,10 +21,10 @@ enum Verb {
     Add {
         desc: String,
 
-        #[arg(short = 'p')]
+        #[arg(short = 'p', long)]
         priority: Option<u8>,
 
-        #[arg(long)]
+        #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
     },
     Complete {
