@@ -163,14 +163,17 @@ pub fn remove_task(f_name: &str, id: u32) -> Result<()> {
 
 fn print_task(task: &Task) {
     println!(
-        "[{}]  {:?}  {}",
+        "[{}]  {}  {:?}  {}",
         task.id.unwrap_or_default(),
+        task.priority.unwrap_or(0),
         task.status,
         task.desc
     );
 }
 
 pub fn list_tasks(f_name: &str, priority: Option<u8>, tags: Option<Vec<String>>) -> Result<()> {
+    println!("ID  PRIORITY  STATUS   DESC");
+
     let file = validate_storage(f_name)?;
     let todo: TodoFile = serde_json::from_reader(&file)?;
 
@@ -182,7 +185,7 @@ pub fn list_tasks(f_name: &str, priority: Option<u8>, tags: Option<Vec<String>>)
             continue;
         }
 
-        if tags.is_some() && task.tags.len() > 0 {
+        if tags.is_some() && !task.tags.is_empty() {
             'tag_loop: for tag in &tags.clone().unwrap() {
                 for task_tags in &task.tags {
                     if task_tags.to_lowercase() == tag.to_lowercase() {

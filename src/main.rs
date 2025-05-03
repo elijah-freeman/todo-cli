@@ -46,6 +46,7 @@ enum Verb {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let _ = todo::validate_storage(&cli.output);
     match cli.verb.unwrap_or(Verb::List {
         priority: None,
         tags: None,
@@ -60,7 +61,4 @@ fn main() -> Result<()> {
         Verb::List { priority, tags } => todo::list_tasks(&cli.output, priority, tags)?,
     }
     Ok(())
-
-    //let todos: Vec<todo::Todo> = todo::read_tasks_from_file(&cfg);
-    //let todo = todo::todo::new(&task[..], &title[..]);
 }
