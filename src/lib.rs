@@ -1,6 +1,7 @@
 use anyhow::{self, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs::{File, OpenOptions},
     io::ErrorKind,
 };
@@ -155,82 +156,85 @@ pub fn add_task(path: &str, task: Task) -> Result<()> {
     anyhow::Ok(())
 }
 
-pub fn complete_task(f_name: &str, id: u32) -> Result<()> {
-    let file = validate_storage(&f_name)?;
-    let mut todo: TodoFile = serde_json::from_reader(&file)?;
+/// Mark task as done.
+pub fn complete_task(path: &str, id: Uuid) -> Result<()> {
+    // Open and lock storage file.
+    let file = open_or_init(path)?;
+    let mut data: TodoFile = load_from(&file)?;
 
-    todo.meta.version += 1;
-    for task in &mut todo.tasks {
-        if task.id.unwrap() == id {
-            task.status = Status::Done;
-            break;
-        }
-    }
-
-    serde_json::to_writer_pretty(File::create(&f_name)?, &todo)?;
-
-    anyhow::Ok(())
-}
-
-pub fn remove_task(f_name: &str, id: u32) -> Result<()> {
-    let file = validate_storage(&f_name)?;
-    let mut todo: TodoFile = serde_json::from_reader(&file)?;
-
-    todo.meta.version += 1;
-
-    let mut index = 0;
-    for task in &todo.tasks {
-        if task.id.unwrap() == id {
-            break;
-        }
-        index += 1;
-    }
-    todo.tasks.remove(index);
-
-    serde_json::to_writer_pretty(File::create(f_name)?, &todo)?;
-
-    anyhow::Ok(())
-}
-
-fn print_task(task: &Task) {
-    println!(
-        "[{}]  {}  {:?}  {}",
-        task.id.unwrap_or_default(),
-        task.priority.unwrap_or(0),
-        task.status,
-        task.desc
-    );
-}
-
-pub fn list_tasks(f_name: &str, priority: Option<u8>, tags: Option<Vec<String>>) -> Result<()> {
-    println!("ID  PRIORITY  STATUS   DESC");
-
-    let file = validate_storage(f_name)?;
-    let todo: TodoFile = serde_json::from_reader(&file)?;
-
-    let is_filter_applied = priority.is_some() || tags.is_some();
-
-    for task in &todo.tasks {
-        if priority.is_some_and(|p| p == task.priority.unwrap_or(0)) {
-            print_task(task);
-            continue;
-        }
-
-        if tags.is_some() && !task.tags.is_empty() {
-            'tag_loop: for tag in &tags.clone().unwrap() {
-                for task_tags in &task.tags {
-                    if task_tags.to_lowercase() == tag.to_lowercase() {
-                        print_task(task);
-                        break 'tag_loop;
-                    }
-                }
+    // Find task mutably in place.
+    match data.tasks.iter_mut().find(|t| t.id == id) {
+        Some(task) => {
+            // Only change if task not already done.
+            if task.status != Status::Done {
+                task.status = Status::Done;
+                task.updated_at = Some(TimeStamp::now_utc());
+                task.completed_at = task.updated_at;
             }
-            continue;
         }
-
-        if !is_filter_applied {
-            print_task(task);
-        }
+        None => bail!("task {id} not found"),
     }
+
+    // Release lock on file drop.
+    drop(file);
+    atomic_write(path, &data).context("Writing updated task list.")
+}
+
+/// Remove a task (returns error if id is missing).
+pub fn remove_task(path: &str, id: Uuid) -> Result<()> {
+    let file = open_or_init(path)?;
+    let mut data: TodoFile = load_from(&file)?;
+
+    // `retain` keeps all elements for which the predicate is *true*.
+    let before = data.tasks.len();
+    data.tasks.retain(|t| t.id != id);
+    let after = data.tasks.len();
+
+    if before == after {
+        bail!("task {id} is not found");
+    }
+
+    drop(file);
+    atomic_write(path, &data).context("Persisting after remove")
+}
+
+/// List tasks, optionally filtered out by priority and/or tags.
+/// Prints to stdout.
+pub fn list_tasks(path: &str, priority_filter: Option<u8>, tag_filter: &[String]) -> Result<()> {
+    // Pre-lowercase tag filter once, not per task.
+    let needle: HashSet<String> = tag_filter.iter().map(|s| s.to_ascii_lowercase()).collect();
+
+    let file = open_or_init(path)?;
+    let data: TodoFile = load_from(&file);
+
+    println!("ID                               | Pri | Status      | Title");
+    println!("----------------------------------+-----+-------------+----------------");
+
+    data.tasks
+        .iter()
+        .filter(|t| match priority_filter {
+            Some(p) => t.priority == Some(p),
+            None => true,
+        })
+        .filter(|t| {
+            if needle.is_empty() {
+                true
+            } else {
+                // Build lowercase set for task once per task.
+                let task_tags: HashSet<String> =
+                    t.tags.iter().map(|s| s.to_ascii_lowercase()).collect();
+                needle.is_subset(&task_tags)
+            }
+        })
+        .for_each(|t| {
+            println!(
+                "{:<34} | {:<3} | {:<11} | {}",
+                t.id,
+                t.priority.map_or("--", |p| p.to_string().as_str()),
+                format!("{:?}", t.status).to_ascii_lowercase(),
+                t.title
+            )
+        });
+
     anyhow::Ok(())
 }
