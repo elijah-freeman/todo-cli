@@ -20,25 +20,44 @@ struct Cli {
 enum Verb {
     Add {
         desc: String,
+
+        #[arg(short = 'p')]
+        priority: Option<u8>,
+
+        #[arg(long)]
+        tags: Option<Vec<String>>,
     },
     Complete {
         #[arg(short = 'c', long)]
-        id: i32,
+        id: u32,
     },
     Remove {
         #[arg(short = 'r', long)]
-        id: i32,
+        id: u32,
     },
-    List,
+    List {
+        #[arg(short = 'p')]
+        priority: Option<u8>,
+
+        #[arg(long)]
+        tags: Option<Vec<String>>,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.verb.unwrap_or(Verb::List) {
-        Verb::Add { desc } => todo::add_task(&cli.output, &desc)?,
+    match cli.verb.unwrap_or(Verb::List {
+        priority: None,
+        tags: None,
+    }) {
+        Verb::Add {
+            desc,
+            priority,
+            tags,
+        } => todo::add_task(&cli.output, &desc, &cli.title, priority, tags)?,
         Verb::Complete { id } => todo::complete_task(&cli.output, id)?,
         Verb::Remove { id } => todo::remove_task(&cli.output, id)?,
-        Verb::List => todo::list_tasks(&cli.output)?,
+        Verb::List { priority, tags } => todo::list_tasks(&cli.output, priority, tags)?,
     }
     Ok(())
 

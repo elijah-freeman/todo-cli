@@ -1,8 +1,8 @@
-use anyhow::{Ok, Result};
+use anyhow::{self, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::ErrorKind,
 };
 use time::UtcDateTime;
 
@@ -15,10 +15,23 @@ pub enum Status {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct Meta {
+    version: u32,
+    current_id: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TodoFile {
+    meta: Meta,
+    tasks: Vec<Task>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Task {
-    pub id: Option<i32>,
+    pub id: Option<u32>,
     pub title: String,
     pub desc: String,
+    pub tags: Vec<String>,
     pub status: Status,
     pub date_created: UtcDateTime,
     pub date_completed: UtcDateTime,
@@ -28,13 +41,7 @@ pub struct Task {
 pub struct TaskBuilder(Task);
 
 impl TaskBuilder {
-    pub fn id(mut self, output: &str) -> Self {
-        let tasks = read_tasks(output);
-        let mut id = 1;
-        for task in tasks {
-            id = task.id.unwrap();
-        }
-        id += 1;
+    pub fn id(mut self, id: u32) -> Self {
         self.0.id = Some(id);
         self
     }
@@ -46,6 +53,11 @@ impl TaskBuilder {
 
     pub fn desc(mut self, desc: &str) -> Self {
         self.0.desc = desc.to_string();
+        self
+    }
+
+    pub fn tags(mut self, tags: Vec<String>) -> Self {
+        self.0.tags = tags;
         self
     }
 
@@ -68,152 +80,160 @@ impl Task {
     /// Creates a new [`Task`].
     pub fn builder() -> TaskBuilder {
         TaskBuilder(Task {
-            id: Some(-1),
+            id: Some(0),
             title: String::from("Task"),
             desc: String::from("No description"),
+            tags: vec![],
             status: Status::Incomplete,
             date_created: UtcDateTime::now(),
             date_completed: UtcDateTime::now(),
-            priority: None,
+            priority: Some(0),
         })
     }
-
-    fn _new(desc: &str) -> Self {
-        Task::builder().desc(desc).build()
-    }
-
-    fn _status(&mut self, status: Status) {
-        self.status = status;
-    }
-
-    fn _date_completed(&mut self) {
-        self.date_completed = UtcDateTime::now();
-    }
 }
 
-pub fn add_task(output: &str, desc: &str) -> Result<()> {
-    //let task = Task::new(desc);
-    let task = Task::builder().id(output).desc(desc).build();
-    write_task(output, &task)?;
-    Ok(())
+pub fn add_task(
+    f_name: &str,
+    desc: &str,
+    title: &str,
+    priority: Option<u8>,
+    tags: Option<Vec<String>>,
+) -> Result<()> {
+    let mut task = Task::builder().desc(desc).build();
+
+    let file = validate_storage(&f_name)?;
+    let mut todo: TodoFile = serde_json::from_reader(&file)?;
+
+    task.id = Some(todo.meta.current_id);
+    task.title = title.to_string();
+    task.tags = {
+        let default = vec![];
+        match tags {
+            Some(x) => x,
+            None => default,
+        }
+    };
+    task.priority = priority;
+
+    todo.meta.version += 1;
+    todo.meta.current_id += 1;
+    todo.tasks.push(task);
+
+    serde_json::to_writer_pretty(File::create(f_name)?, &todo)?;
+
+    anyhow::Ok(())
 }
 
-pub fn complete_task(output: &str, id: i32) -> Result<()> {
-    let mut tasks = read_tasks(output);
-    for task in &mut tasks {
+pub fn complete_task(f_name: &str, id: u32) -> Result<()> {
+    let file = validate_storage(&f_name)?;
+    let mut todo: TodoFile = serde_json::from_reader(&file)?;
+
+    todo.meta.version += 1;
+    for task in &mut todo.tasks {
         if task.id.unwrap() == id {
             task.status = Status::Complete;
             break;
         }
     }
-    write_tasks(output, tasks)?;
-    Ok(())
+
+    serde_json::to_writer_pretty(File::create(&f_name)?, &todo)?;
+
+    anyhow::Ok(())
 }
 
-pub fn remove_task(output: &str, id: i32) -> Result<()> {
-    let mut tasks = read_tasks(output);
-    let mut i = 0;
-    for task in &tasks {
+pub fn remove_task(f_name: &str, id: u32) -> Result<()> {
+    let file = validate_storage(&f_name)?;
+    let mut todo: TodoFile = serde_json::from_reader(&file)?;
+
+    todo.meta.version += 1;
+
+    let mut index = 0;
+    for task in &todo.tasks {
         if task.id.unwrap() == id {
             break;
         }
-        i += 1;
+        index += 1;
     }
+    todo.tasks.remove(index);
 
-    for task in &tasks {
-        println!("{:?}", task);
-    }
+    serde_json::to_writer_pretty(File::create(f_name)?, &todo)?;
 
-    if i < tasks.len() {
-        tasks.remove(i);
-    }
-    println!("--");
-
-    for task in &tasks {
-        println!("{:?}", task);
-    }
-
-    write_tasks(output, tasks)?;
-    Ok(())
+    anyhow::Ok(())
 }
 
-pub fn list_tasks(output: &str) -> Result<()> {
-    let tasks = read_tasks(output);
-    for task in tasks {
-        println!(
-            "[{}]  {:?}  {}",
-            task.id.unwrap_or_default(),
-            task.status,
-            task.desc
-        );
-    }
-    Ok(())
+fn print_task(task: &Task) {
+    println!(
+        "[{}]  {:?}  {}",
+        task.id.unwrap_or_default(),
+        task.status,
+        task.desc
+    );
 }
 
-fn read_tasks(f_name: &str) -> Vec<Task> {
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .open(f_name)
-        .unwrap();
-    //let file = File::open(f_name).expect("file should exist");
-    let reader = BufReader::with_capacity(64 * 1024, file);
-    let mut buffer = String::new();
+pub fn list_tasks(f_name: &str, priority: Option<u8>, tags: Option<Vec<String>>) -> Result<()> {
+    let file = validate_storage(f_name)?;
+    let todo: TodoFile = serde_json::from_reader(&file)?;
 
-    let mut todos: Vec<Task> = Vec::new();
+    let is_filter_applied = priority.is_some() || tags.is_some();
 
-    //match reader.read_line(&mut buffer) {
-    //    Ok(l) => l,
-    //    Err(_e) => panic!("Could not read count"),
-    //}
+    for task in &todo.tasks {
+        if priority.is_some_and(|p| p == task.priority.unwrap_or(0)) {
+            print_task(task);
+            continue;
+        }
 
-    for line_result in reader.lines() {
-        let line = line_result.expect("failed to parse line");
+        if tags.is_some() && task.tags.len() > 0 {
+            'tag_loop: for tag in &tags.clone().unwrap() {
+                for task_tags in &task.tags {
+                    if task_tags.to_lowercase() == tag.to_lowercase() {
+                        print_task(task);
+                        break 'tag_loop;
+                    }
+                }
+            }
+            continue;
+        }
 
-        //let line = match line_result {
-        //    Ok(l) => (),
-        //    Err(_e) => panic!("Could not read from file"),
-        //};
-
-        buffer.push_str(&line[..]);
-
-        if line.chars().nth(0) == Some('}') {
-            let todo: Task = serde_json::from_str(&buffer).expect("a deserialized todo");
-            todos.push(todo);
-            buffer.clear();
+        if !is_filter_applied {
+            print_task(task);
         }
     }
-    todos
+    anyhow::Ok(())
 }
 
-fn write_task(f_name: &str, todo: &Task) -> Result<()> {
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(f_name)
-        .expect("a file opened for appending");
-    let mut writer = BufWriter::with_capacity(64 * 1024, file);
-    serde_json::to_writer_pretty(&mut writer, todo)?;
-    writeln!(&mut writer, "\n").expect("To write nextline character");
-
-    writer.flush()?;
-    Ok(())
-}
-
-fn write_tasks(f_name: &str, tasks: Vec<Task>) -> Result<()> {
-    println!("--write_tasks--");
-    let file = OpenOptions::new()
-        .create(true)
+pub fn validate_storage(f_name: &str) -> Result<File> {
+    let result = OpenOptions::new()
         .write(true)
-        .open(f_name)
-        .expect("a file opened for writing.");
+        .read(true)
+        .create_new(true)
+        .open(f_name);
+    let file = match result {
+        Ok(file) => file,
+        Err(error) => match error.kind() {
+            ErrorKind::AlreadyExists => {
+                match OpenOptions::new()
+                    .write(true)
+                    .read(true)
+                    .create_new(false)
+                    .open(f_name)
+                {
+                    Ok(file) => return Ok(file),
+                    Err(_) => panic!("Could not open file {}.", f_name),
+                }
+            }
+            other_error => panic!("Problem validating file {other_error:?}"),
+        },
+    };
 
-    let mut writer = BufWriter::with_capacity(64 * 1024, file);
+    let data = TodoFile {
+        meta: Meta {
+            version: 1,
+            current_id: 1,
+        },
+        tasks: vec![],
+    };
 
-    for task in tasks {
-        println!("{:?}", &task);
-        serde_json::to_writer_pretty(&mut writer, &task)?;
-        writeln!(&mut writer, "\n").expect("To write nextline character");
-    }
-    Ok(())
+    serde_json::to_writer_pretty(&file, &data)?;
+
+    Ok(file)
 }
