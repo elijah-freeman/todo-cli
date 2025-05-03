@@ -7,6 +7,8 @@ use std::{
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use storage::{atomic_write, load_from, open_or_init};
+
 // Self documenting alias
 pub type TimeStamp = OffsetDateTime;
 
@@ -19,112 +21,136 @@ pub enum Status {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Meta {
-    version: u32,
-    current_id: u32,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TodoFile {
-    meta: Meta,
-    tasks: Vec<Task>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
 pub struct Task {
+    /** Immutable primary key (unique per task) */
     pub id: Uuid,
+
+    /** Required short summary */
     pub title: String,
-    pub desc: String,
-    pub tags: Vec<String>,
+
+    /** Optional long description */
+    pub desc: Option<String>,
+
+    /** Workflow state machine */
     pub status: Status,
-    pub date_created: TimeStamp,
-    pub date_updated: TimeStamp,
-    pub date_completed: TimeStamp,
-    pub priority: Option<u8>,
+
+    /** 1 = highest, 0 = unprioritized */
+    pub priority: u8,
+
+    /** Labelling for filtering */
+    pub tags: Vec<String>,
+
+    /** Created at UTC time (immutable once set) */
+    pub created_at: TimeStamp,
+
+    /** Last time user updated task */
+    pub updated_at: Option<TimeStamp>,
+
+    /** When task reached a 'Done' state */
+    pub completed_at: Option<TimeStamp>,
 }
 
-pub struct TaskBuilder(Task);
+// --- Zero size markers for the "typed-state" builder ---
 
-impl TaskBuilder {
-    pub fn id(mut self, id: u32) -> Self {
-        self.0.id = Some(id);
-        self
-    }
+/** Compile time flag: title has not been set */
+pub struct MissingTitle;
 
-    pub fn title(mut self, title: &str) -> Self {
-        self.0.title = title.to_string();
-        self
-    }
+/** Compile time flag: title has been set */
+pub struct HasTitle;
 
-    pub fn desc(mut self, desc: &str) -> Self {
-        self.0.desc = desc.to_string();
-        self
-    }
+// --- Generic Builder struct ---
+pub struct TaskBuilder<TitleState> {
+    /// Every field mirrors [`Task`] but they are *all* optional
+    /// until `.build()` proves invariants are satisfied.
+    title: Option<String>,
+    desc: Option<String>,
+    priority: u8,
+    tags: Vec<String>,
 
-    pub fn tags(mut self, tags: Vec<String>) -> Self {
-        self.0.tags = tags;
-        self
-    }
-
-    pub fn status(mut self, status: Status) -> Self {
-        self.0.status = status;
-        self
-    }
-
-    pub fn priority(mut self, priority: u8) -> Self {
-        self.0.priority = Some(priority);
-        self
-    }
-
-    pub fn build(self) -> Task {
-        self.0
-    }
+    // zero-cost phantom marker to record builder state in type system
+    _state: std::marker::PhantomData<TitleState>,
 }
 
+// --- Entry-Point: Task::builder() ---
 impl Task {
-    /// Creates a new [`Task`].
-    pub fn builder() -> TaskBuilder {
-        TaskBuilder(Task {
-            id: Some(0),
-            title: String::from("Task"),
-            desc: String::from("No description"),
-            tags: vec![],
-            status: Status::Pending,
-            date_created: TimeStamp::now(),
-            date_completed: TimeStamp::now(),
-            priority: Some(0),
-        })
+    /// Creates a new builder chain (*without* a title).
+    pub fn builder() -> TaskBuilder<MissingTitle> {
+        TaskBuilder {
+            title: None,
+            desc: None,
+            priority: 0,
+            tags: Vec::new(),
+            _state: std::marker::PhantomData,
+        }
     }
 }
 
-pub fn add_task(
-    f_name: &str,
-    desc: &str,
-    title: &str,
-    priority: Option<u8>,
-    tags: Option<Vec<String>>,
-) -> Result<()> {
-    let mut task = Task::builder().desc(desc).build();
-
-    let file = validate_storage(&f_name)?;
-    let mut todo: TodoFile = serde_json::from_reader(&file)?;
-
-    task.id = Some(todo.meta.current_id);
-    task.title = title.to_string();
-    task.tags = {
-        let default = vec![];
-        match tags {
-            Some(x) => x,
-            None => default,
+// --- Stage-1: impl: methods available *before* title exists ---
+impl TaskBuilder<MissingTitle> {
+    pub fn title<S: Into<String>>(mut self, t: S) -> TaskBuilder<HasTitle> {
+        self.title = Some(t.into());
+        TaskBuilder {
+            title: self.title,
+            desc: self.desc,
+            priority: self.priority,
+            tags: self.tags,
+            _state: std::marker::phantomData, // Flips to HasTitle marker
         }
-    };
-    task.priority = priority;
+    }
+}
 
-    todo.meta.version += 1;
-    todo.meta.current_id += 1;
-    todo.tasks.push(task);
+// --- Stage-2: impl: common (setter) methods available in *either* state ---
+impl<TitleState> TaskBuilder<TitleState> {
+    /// Optional free-text description.
+    pub fn desc<S: Into<String>>(mut self, d: S) -> Self {
+        self.desc = Some(d.into());
+        self
+    }
 
-    serde_json::to_writer_pretty(File::create(f_name)?, &todo)?;
+    /// Optional priority (assert range 0-5).
+    pub fn priority(mut self, p: u8) -> Self {
+        assert!((0..=5).contains(&p), "Priority must be 0-5.");
+        self.priority = p;
+        self
+    }
+
+    /// Add a single tag.
+    pub fn tag<S: Into<String>>(mut self, t: S) -> Self {
+        self.tags.push(t.into());
+        self
+    }
+}
+
+// --- Final-Stage: impl: .build() only once title supplied --
+impl TaskBuilder<HasTitle> {
+    /// Consume builder and return fully-formed [`Task`]
+    pub fn build(self) -> Task {
+        let now = TimeStamp::now_utc();
+        Task {
+            id: Uuid::new_v4(),
+            title: self.title.unwrap(),
+            desc: self.desc,
+            status: Status::Pending,
+            tags: self.tags,
+            created_at: now,
+            updated_at: None,
+            completed_at: None,
+        }
+    }
+}
+
+pub fn add_task(path: &str, task: Task) -> Result<()> {
+    // Open (or create) the storage file, grab exclusive lock.
+    let file = open_or_init(path)?;
+
+    // Deserialize current state. Passes &File as Read+Seek.
+    let mut data: TodoFile = load_from(&file)?;
+
+    // Mutate in memory
+    data.tasks.push(task);
+
+    // Write back atomically *after* we drop the lock.
+    atomic_write(path, &data)?;
 
     anyhow::Ok(())
 }
@@ -207,41 +233,4 @@ pub fn list_tasks(f_name: &str, priority: Option<u8>, tags: Option<Vec<String>>)
         }
     }
     anyhow::Ok(())
-}
-
-pub fn validate_storage(f_name: &str) -> Result<File> {
-    let result = OpenOptions::new()
-        .write(true)
-        .read(true)
-        .create_new(true)
-        .open(f_name);
-    let file = match result {
-        Ok(file) => file,
-        Err(error) => match error.kind() {
-            ErrorKind::AlreadyExists => {
-                match OpenOptions::new()
-                    .write(true)
-                    .read(true)
-                    .create_new(false)
-                    .open(f_name)
-                {
-                    Ok(file) => return Ok(file),
-                    Err(_) => panic!("Could not open file {}.", f_name),
-                }
-            }
-            other_error => panic!("Problem validating file {other_error:?}"),
-        },
-    };
-
-    let data = TodoFile {
-        meta: Meta {
-            version: 1,
-            current_id: 1,
-        },
-        tasks: vec![],
-    };
-
-    serde_json::to_writer_pretty(&file, &data)?;
-
-    Ok(file)
 }
