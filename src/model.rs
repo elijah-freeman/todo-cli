@@ -1,22 +1,25 @@
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
+use std::marker::PhantomData;
+use time::OffsetDateTime; // RFC-3339 timestamps
+use uuid::Uuid;
 
 // Self documenting alias
 pub type TimeStamp = OffsetDateTime;
 
-// --- Task Status ---
-#[derive(Debug, Deserialize, Serialize)]
+// --- Finite workflow states ---
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
 pub enum Status {
     Done,
     Pending,
-    Canceled,
+    Cancelled,
     InProgress,
 }
 
 // --- Task Object ---
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Task {
-    /** Immutable primary key (unique per task) */
+    /** Immutable primary key (unique per task). Private. */
     pub id: Uuid,
 
     /** Required short summary */
@@ -29,7 +32,7 @@ pub struct Task {
     pub status: Status,
 
     /** 1 = highest, 0 = unprioritized */
-    pub priority: u8,
+    pub priority: Option<u8>,
 
     /** Labelling for filtering */
     pub tags: Vec<String>,
@@ -54,11 +57,11 @@ pub struct TaskBuilder<TitleState> {
     /// until `.build()` proves invariants are satisfied.
     title: Option<String>,
     desc: Option<String>,
-    priority: u8,
-    tags: Vec<String>,
+    priority: Option<u8>,
+    pub tags: Vec<String>,
 
     // zero-cost phantom marker to record builder state in type system
-    _state: std::marker::PhantomData<TitleState>,
+    _state: PhantomData<TitleState>,
 }
 
 // --- Entry-Point: Task::builder(). impl domain methods on `Task` ---
@@ -68,9 +71,9 @@ impl Task {
         TaskBuilder {
             title: None,
             desc: None,
-            priority: 0,
+            priority: None,
             tags: Vec::new(),
-            _state: std::marker::PhantomData,
+            _state: PhantomData,
         }
     }
 
@@ -100,7 +103,7 @@ impl Task {
         let tag = t.into();
         if !self.tags.iter().any(|s| s.eq_ignore_ascii_case(&tag)) {
             self.tags.push(tag);
-            self.updated_at(Some(TimeStamp::now_utc));
+            self.updated_at = Some(TimeStamp::now_utc());
         }
     }
 }
@@ -114,7 +117,7 @@ impl TaskBuilder<MissingTitle> {
             desc: self.desc,
             priority: self.priority,
             tags: self.tags,
-            _state: std::marker::phantomData, // Flips to HasTitle marker
+            _state: std::marker::PhantomData, // Flips to HasTitle marker
         }
     }
 }
@@ -130,7 +133,7 @@ impl<TitleState> TaskBuilder<TitleState> {
     /// Optional priority (assert range 0-5).
     pub fn priority(mut self, p: u8) -> Self {
         assert!((0..=5).contains(&p), "Priority must be 0-5.");
-        self.priority = p;
+        self.priority = Some(p);
         self
     }
 
@@ -152,6 +155,7 @@ impl TaskBuilder<HasTitle> {
             desc: self.desc,
             status: Status::Pending,
             tags: self.tags,
+            priority: self.priority,
             created_at: now,
             updated_at: None,
             completed_at: None,
@@ -170,8 +174,8 @@ pub struct Meta {
 // -- Top level container ---
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TodoFile {
-    meta: Meta,
-    tasks: Vec<Task>,
+    pub meta: Meta,
+    pub tasks: Vec<Task>,
 }
 
 impl TodoFile {

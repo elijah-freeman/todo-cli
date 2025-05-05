@@ -7,9 +7,11 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use fs4::FileExt;
+use fs4::fs_std::FileExt;
 use serde::{Serialize, de::DeserializeOwned};
 use tempfile::NamedTempFile; // For atomic writes
+
+use crate::model::TodoFile;
 
 /// Open storage file *with* a shared lock (read/write),
 /// auto-creating and seeding if missing.
@@ -82,7 +84,7 @@ where
     // Rewind since caller may have written.
     file.seek(SeekFrom::Start(0))?;
 
-    let data = serde_json::from_reader(&file).context("JSON parse")?;
+    let data = serde_json::from_reader(file).context("JSON parse")?;
 
     Ok(data)
 }
@@ -90,6 +92,6 @@ where
 // --- Internal Helper: advisory locking ---
 fn lock_file(file: &File) -> Result<()> {
     file.lock_exclusive()
-        .with_context("Another process is already using the todo file.")?;
+        .context("Another process is already using the todo file.")?;
     Ok(())
 }

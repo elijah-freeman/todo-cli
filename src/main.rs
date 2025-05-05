@@ -1,5 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueHint};
+use uuid::Uuid;
+
+use todo::model::Task;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -9,7 +12,7 @@ struct Cli {
     verb: Option<Verb>,
 
     /// Shared flag for all verbs.
-    #[arg(short = 't', long = "title", default_value = "Task")]
+    #[arg(short = 't', long, default_value = "Task")]
     title: String,
 
     #[arg(short, long, value_hint = ValueHint::FilePath, default_value = "./todo.json")]
@@ -25,40 +28,49 @@ enum Verb {
         priority: Option<u8>,
 
         #[arg(long, value_delimiter = ',')]
-        tags: Option<Vec<String>>,
+        tags: Vec<String>,
     },
     Complete {
         #[arg(short = 'c', long)]
-        id: u32,
+        id: Uuid,
     },
     Remove {
         #[arg(short = 'r', long)]
-        id: u32,
+        id: Uuid,
     },
     List {
-        #[arg(short = 'p')]
+        #[arg(short = 'p', long)]
         priority: Option<u8>,
 
-        #[arg(long)]
-        tags: Option<Vec<String>>,
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
     },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let _ = todo::validate_storage(&cli.output);
     match cli.verb.unwrap_or(Verb::List {
         priority: None,
-        tags: None,
+        tags: Vec::new(),
     }) {
         Verb::Add {
             desc,
             priority,
             tags,
-        } => todo::add_task(&cli.output, &desc, &cli.title, priority, tags)?,
+        } => {
+            let task = Task::builder()
+                .title(desc)
+                .priority(priority.unwrap_or(0))
+                .tags
+                .into_iter()
+                .fold(Task::builder().title(&cli.title), |b, tag| b.tag(tag))
+                .build();
+
+            todo::add_task(&cli.output, task)?;
+        }
         Verb::Complete { id } => todo::complete_task(&cli.output, id)?,
         Verb::Remove { id } => todo::remove_task(&cli.output, id)?,
-        Verb::List { priority, tags } => todo::list_tasks(&cli.output, priority, tags)?,
+        Verb::List { priority, tags } => todo::list_tasks(&cli.output, priority, &tags)?,
     }
     Ok(())
 }
